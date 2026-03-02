@@ -1,0 +1,80 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+venv/
+env/
+ENV/
+.Python
+dist/
+build/
+
+# ─── Node / JS ───────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+
+# ─── Environment secrets ─────────────────────────────────────────────────────
+# Keep .env files OUT of git - use .env.example as reference
+backend/.env
+frontend/.env
+admin/.env
+field_app/.env
+*.env.local
+*.env.production
+
+# ─── Expo / React Native ─────────────────────────────────────────────────────
+.expo/
+frontend/.expo/
+field_app/.expo/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+backend/backend.log
+backend/logs/
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Build outputs ───────────────────────────────────────────────────────────
+admin/dist/
+frontend/dist/
+
+# ─── Database ────────────────────────────────────────────────────────────────
+*.db
+*.sqlite3
+
+# ─── Service credentials ─────────────────────────────────────────────────────
+service-account.json
+*.json.key
+
+# ─── Uploads ─────────────────────────────────────────────────────────────────
+backend/uploads/
+
+# ─── Test artifacts ──────────────────────────────────────────────────────────
+.pytest_cache/
+playwright-report/
+test-results/
+
+# ─── Gemini / AI artifacts ───────────────────────────────────────────────────
+.gemini/
