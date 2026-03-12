@@ -21,12 +21,17 @@ import uuid
 from fastapi.staticfiles import StaticFiles
 
 # Configure Logging
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("../logs/backend.log")
+        logging.FileHandler(os.path.join(LOG_DIR, "backend.log"))
     ]
 )
 logger = logging.getLogger(__name__)
