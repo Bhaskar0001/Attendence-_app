@@ -43,7 +43,10 @@ export const AuthProvider = ({ children }) => {
                 device_id: deviceId
             });
 
-            const { access_token, user: userData } = response.data;
+            const { access_token, user: userData, force_password_change } = response.data;
+            if (force_password_change) {
+                userData.force_password_change = true;
+            }
 
             await SecureStore.setItemAsync('userToken', access_token);
             await SecureStore.setItemAsync('userData', JSON.stringify(userData));

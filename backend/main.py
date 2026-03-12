@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, Depends
+from fastapi import FastAPI, HTTPException, File, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from datetime import datetime, timezone, timedelta
@@ -8,7 +8,7 @@ import math
 import pandas as pd
 import io
 from bson import ObjectId
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
@@ -47,7 +47,7 @@ from models import (
     RegisterRequest, LoginRequest, VerifyPresenceRequest, Token, LoginResponse, EmployeeProfile, UpdateFaceRequest,
     AdminLoginRequest, EmployeeUpdate, SystemSettings, Admin, Organization, OrganizationRegisterRequest, SubAdminCreate,
     EmployeeType, TerritoryType, AttendanceType, CheckInMethod, PlanStatus, VisitPlan, Visit, LocationPing, ExpenseClaim,
-    LeaveType, LeaveStatus, DiscussionMessage, LeaveRequest, SyncBatchRequest
+    LeaveType, LeaveStatus, DiscussionMessage, LeaveRequest, SyncBatchRequest, ChangePasswordRequest
 )
 from auth import (
     get_password_hash, verify_password, create_access_token, 
@@ -66,10 +66,19 @@ app = FastAPI(
     redoc_url="/redoc" if APP_ENV != "production" else None,
 )
 
-# Configure CORS — in production, restrict to known origins
+# Configure CORS
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
 if _raw_origins == "*":
-    _allowed_origins = ["*"]
+    # In development, we allow common ports and local IPs
+    _allowed_origins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://192.168.1.6:5173",
+        "http://192.168.1.6:5174",
+        "http://localhost:3000", # Common for CRA
+    ]
 else:
     _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
@@ -79,7 +88,36 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# --- GLOBAL EXCEPTION HANDLERS ---
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """Standardize HTTP exception responses for frontend mapping."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "code": f"HTTP_{exc.status_code}",
+            "detail": exc.detail,
+            "type": "standard_error"
+        },
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Catch-all for internal server errors to avoid leaking tracebacks in production."""
+    logger.exception(f"Unhandled error: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "detail": "An unexpected error occurred on the server." if APP_ENV == "production" else str(exc),
+            "type": "system_error"
+        },
+    )
 
 # --- STARTUP EVENT ---
 @app.on_event("startup")
@@ -91,7 +129,7 @@ async def startup_event():
         ("attendance_logs", attendance_logs_collection, [("user_id", 1), ("timestamp", -1)], {"background": True}),
         ("visit_plans", visit_plans_collection, [("employee_id", 1), ("status", 1)], {"background": True}),
         ("visit_logs", visit_logs_collection, [("employee_id", 1), ("timestamp", -1)], {"background": True}),
-        ("location_pings", location_pings_collection, [("employee_id", 1), ("timestamp", -1)], {"background": True}),
+        ("location_pings", location_pings_collection, [("employee_id", 1), ("recorded_at", -1)], {"background": True}),
         ("km_reimbursements", km_reimbursements_collection, [("employee_id", 1), ("date", -1)], {"background": True}),
     ]
     for name, col, keys, kwargs in index_ops:
@@ -570,7 +608,8 @@ async def login(req: LoginRequest, request: Request):
             "profile_image": user.get("profile_image"),
             "is_manager": is_manager
         },
-        "needs_face_enrollment": needs_enrollment
+        "needs_face_enrollment": needs_enrollment,
+        "force_password_change": user.get("force_password_change", False)
     }
     
     try:
@@ -598,6 +637,27 @@ async def get_me(employee=Depends(get_current_employee)):
         "profile_image": employee.get("profile_image"),
         "is_manager": subordinates_count > 0
     }
+
+@app.post("/api/me/change-password")
+async def change_password(req: ChangePasswordRequest, employee=Depends(get_current_employee)):
+    """Change employee password and clear force_password_change flag."""
+    user = await employees_collection.find_one({"email": employee["email"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    is_valid = verify_password(req.old_password, user.get("hashed_password", ""))
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Incorrect old password")
+        
+    new_hashed_password = get_password_hash(req.new_password)
+    await employees_collection.update_one(
+        {"email": employee["email"]},
+        {"$set": {
+            "hashed_password": new_hashed_password,
+            "force_password_change": False
+        }}
+    )
+    return {"status": "success", "message": "Password updated successfully"}
 
 
 @app.post("/verify-presence")
@@ -687,6 +747,11 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
     - Both: Face Liveness/Match + Mock Detection.
     """
     try:
+        # 0. Global Telemetry Defaults
+        office_lat = float(os.getenv("OFFICE_LAT", 0))
+        office_long = float(os.getenv("OFFICE_LONG", 0))
+        wifi_pct = 0
+        
         # 1. Identity & Role Fetch
         user = await employees_collection.find_one({"email": req.email})
         if not user:
@@ -766,7 +831,7 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
 
         # 3. Branch Verification Logic
         check_in_method = CheckInMethod.WIFI_GEOFENCE
-        
+
         if role == EmployeeType.DESK:
             # DESK: Strict WiFi Check
             wifi_pct = max(0, min(100, 2 * (req.wifi_strength + 100)))
@@ -774,8 +839,6 @@ async def smart_attendance(req: VerifyPresenceRequest, background_tasks: Backgro
                  raise HTTPException(status_code=403, detail=f"WiFi signal too weak ({wifi_pct:.0f}%). Office attendance requires >= 80% signal.")
             
             # DESK: Strict Office Geofence
-            office_lat = float(os.getenv("OFFICE_LAT", 0))
-            office_long = float(os.getenv("OFFICE_LONG", 0))
             radius = float(os.getenv("GEOFENCE_RADIUS_METERS", 4))
             dist = calculate_haversine(req.lat, req.long, office_lat, office_long)
             
@@ -942,58 +1005,148 @@ async def get_logs(email: str, current_user: dict = Depends(get_current_employee
 
 
 @app.post("/admin/import-employees")
-async def admin_import_employees(file: bytes = File(...), current_admin: dict = Depends(get_current_admin)):
-    """Bulk import employees from Excel."""
+async def admin_import_employees(file: bytes = File(...), current_admin: Admin = Depends(get_current_admin)):
+    """Bulk import employees from CSV or Excel with upsert and auto-assignment."""
     try:
-        org_id = current_admin.get("organization_id")
+        org_id = current_admin.organization_id
         if not org_id:
             raise HTTPException(status_code=403, detail="Organization ID missing in admin context")
 
-        df = pd.read_excel(io.BytesIO(file))
-        required_cols = ["full_name", "email", "employee_id", "password"]
+        # Detect format: try CSV first, then Excel
+        try:
+            df = pd.read_csv(io.BytesIO(file))
+        except Exception:
+            try:
+                df = pd.read_excel(io.BytesIO(file))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Unsupported file format. Please upload a .csv or .xlsx file.")
+        
+        # Normalize column names (strip whitespace, lowercase)
+        df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+        
+        required_cols = ["full_name", "email"]
         for col in required_cols:
             if col not in df.columns:
-                raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
+                raise HTTPException(status_code=400, detail=f"Missing required column: {col}. Required: full_name, email")
         
-        imported_count = 0
-        skipped_count = 0
+        created_count = 0
+        updated_count = 0
+        error_rows = []
         
-        for _, row in df.iterrows():
-            email = str(row["email"])
-            existing = await employees_collection.find_one({"email": email})
-            if existing:
-                skipped_count += 1
-                continue
+        for idx, row in df.iterrows():
+            try:
+                email = str(row["email"]).strip().lower()
+                if not email or email == "nan":
+                    error_rows.append({"row": idx + 2, "error": "Missing email"})
+                    continue
+                    
+                existing = await employees_collection.find_one({"email": email})
                 
-            hashed_password = get_password_hash(str(row["password"]))
-            employee_dict = {
-                "full_name": str(row["full_name"]),
-                "email": email,
-                "employee_id": str(row["employee_id"]),
-                "designation": str(row.get("designation", "Employee")),
-                "department": str(row.get("department", "General")),
-                "hashed_password": hashed_password,
-                "face_embedding": None, # Must re-enroll for biometric data
-                "profile_image": None,
-                "created_at": datetime.now(timezone.utc),
-                "organization_id": org_id
-            }
-            await employees_collection.insert_one(employee_dict)
-            imported_count += 1
-            
-        return {"message": f"Successfully imported {imported_count} employees. {skipped_count} skipped (duplicates)."}
+                # Build update fields (only non-empty columns)
+                update_fields = {}
+                field_map = {
+                    "full_name": "full_name",
+                    "employee_id": "employee_id",
+                    "designation": "designation",
+                    "department": "department",
+                    "employee_type": "employee_type",
+                    "beat_zone_name": "beat_zone_name",
+                }
+                for csv_col, db_field in field_map.items():
+                    if csv_col in df.columns:
+                        val = row.get(csv_col)
+                        if pd.notna(val) and str(val).strip():
+                            update_fields[db_field] = str(val).strip()
+                
+                # Handle manager_email column for auto-assignment
+                if "manager_email" in df.columns:
+                    mgr_email = row.get("manager_email")
+                    if pd.notna(mgr_email) and str(mgr_email).strip():
+                        update_fields["manager_id"] = str(mgr_email).strip().lower()
+                
+                raw_password = str(row.get("password")).strip() if "password" in df.columns and pd.notna(row.get("password")) and str(row.get("password")).strip() else None
+                employee_id = update_fields.get("employee_id", email.split("@")[0])
+
+                if existing:
+                    # UPSERT: Update existing employee's metadata
+                    if raw_password:
+                        update_fields["hashed_password"] = get_password_hash(raw_password)
+                        update_fields["force_password_change"] = True
+
+                    if update_fields:
+                        await employees_collection.update_one(
+                            {"email": email},
+                            {"$set": update_fields}
+                        )
+                        updated_count += 1
+                else:
+                    # CREATE: New employee
+                    final_password = raw_password if raw_password else employee_id
+                    
+                    employee_dict = {
+                        "full_name": update_fields.pop("full_name", email.split("@")[0]),
+                        "email": email,
+                        "employee_id": employee_id,
+                        "designation": update_fields.pop("designation", "Employee"),
+                        "department": update_fields.pop("department", "General"),
+                        "employee_type": update_fields.pop("employee_type", "desk"),
+                        "hashed_password": get_password_hash(final_password),
+                        "force_password_change": True,
+                        "face_embedding": None,
+                        "profile_image": None,
+                        "created_at": datetime.now(timezone.utc),
+                        "organization_id": org_id,
+                        "status": "Active",
+                    }
+                    if "employee_id" in update_fields: del update_fields["employee_id"]
+                    employee_dict.update(update_fields)
+                    
+                    # For Field employees, initialize territory
+                    if employee_dict.get("employee_type") in ["field", "FIELD"]:
+                        employee_dict.update({
+                            "territory_type": "radius",
+                            "territory_radius_meters": 500,
+                            "gps_otp_fallback_enabled": True
+                        })
+                    
+                    await employees_collection.insert_one(employee_dict)
+                    created_count += 1
+                    
+            except Exception as e:
+                error_rows.append({"row": idx + 2, "error": str(e)[:100]})
+        
+        return {
+            "message": f"Import complete. Created: {created_count}, Updated: {updated_count}, Errors: {len(error_rows)}",
+            "created": created_count,
+            "updated": updated_count,
+            "errors": error_rows[:20]  # Limit error output
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Excel import failed for org {org_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Excel import failed: {str(e)}")
+        logger.error(f"Import failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@app.get("/admin/employees/import-template")
+async def get_import_template(current_admin: Admin = Depends(get_current_admin)):
+    """Download a CSV template for employee import."""
+    csv_content = "full_name,email,employee_id,password,designation,department,employee_type,manager_email,beat_zone_name\n"
+    csv_content += "John Doe,john@example.com,EMP001,,Sales Executive,Sales,field,manager@example.com,North Zone\n"
+    csv_content += "Jane Smith,jane@example.com,EMP002,Secret@321,Developer,Engineering,desk,,\n"
+    
+    return StreamingResponse(
+        io.BytesIO(csv_content.encode()),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=employee_import_template.csv"}
+    )
 
 
 @app.get("/admin/export-logs-pdf")
-async def admin_export_logs_pdf(current_admin: dict = Depends(get_current_admin)):
+async def admin_export_logs_pdf(current_admin: Admin = Depends(get_current_admin)):
     """Generate a PDF report of all attendance logs for the admin's organization."""
     try:
-        org_id = current_admin.get("organization_id")
+        org_id = current_admin.organization_id
         if not org_id:
              raise HTTPException(status_code=403, detail="Organization context required")
 
@@ -1056,10 +1209,10 @@ async def admin_export_logs_pdf(current_admin: dict = Depends(get_current_admin)
 
 
 @app.get("/admin/export-logs-excel")
-async def admin_export_logs_excel(current_admin: dict = Depends(get_current_admin)):
+async def admin_export_logs_excel(current_admin: Admin = Depends(get_current_admin)):
     """Export attendance logs to Excel for the admin's organization."""
     try:
-        org_id = current_admin.get("organization_id")
+        org_id = current_admin.organization_id
         if not org_id:
              raise HTTPException(status_code=403, detail="Organization context required")
 
@@ -1152,7 +1305,7 @@ async def admin_login(req: AdminLoginRequest):
     
     if req.email == admin_email and req.password == admin_pass:
         token = create_access_token(data={"sub": req.email, "role": "superadmin"})
-        return {"access_token": token, "token_type": "bearer", "user": {"name": "Super Admin", "email": admin_email}}
+        return {"access_token": token, "token_type": "bearer", "user": {"name": "Super Admin", "email": admin_email, "role": "superadmin"}}
 
     raise HTTPException(status_code=401, detail="Invalid admin credentials")
 
@@ -1220,10 +1373,10 @@ async def register_organization(req: OrganizationRegisterRequest):
 @app.get("/admin/sub-admins")
 async def list_sub_admins(current_admin: Admin = Depends(get_current_admin)):
     """List all admins for the organization (Owner/Superadmin only)."""
-    if current_admin.get("role") not in ["owner", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Only organization owners can manage the admin team.")
+    if current_admin.role not in ["owner", "superadmin", "admin"]:
+        raise HTTPException(status_code=403, detail="Only organization owners/admins can manage the admin team.")
     
-    query = {"organization_id": current_admin.get("organization_id")}
+    query = {"organization_id": current_admin.organization_id}
     cursor = admins_collection.find(query, {"hashed_password": 0})
     admins = await cursor.to_list(length=100)
     for a in admins:
@@ -1234,8 +1387,9 @@ async def list_sub_admins(current_admin: Admin = Depends(get_current_admin)):
 @app.post("/admin/sub-admins")
 async def create_sub_admin(req: SubAdminCreate, current_admin: Admin = Depends(get_current_admin)):
     """Create a new sub-admin for the organization (Owner/Superadmin only)."""
-    if current_admin.get("role") not in ["owner", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Only organization owners can add new admins.")
+    if current_admin.role not in ["owner", "superadmin", "admin"]:
+        logger.warning(f"Access Denied: Admin {current_admin.email} with role {current_admin.role} tried to manage sub-admins.")
+        raise HTTPException(status_code=403, detail="Only organization owners/admins can add new admins.")
     
     # Check if admin already exists
     existing = await admins_collection.find_one({"email": req.email})
@@ -1247,9 +1401,10 @@ async def create_sub_admin(req: SubAdminCreate, current_admin: Admin = Depends(g
         "email": req.email,
         "hashed_password": hashed_password,
         "full_name": req.full_name,
-        "role": "admin", # Sub-admins get 'admin' role
-        "organization_id": current_admin.get("organization_id"),
-        "created_at": datetime.now(timezone.utc)
+        "role": req.role if hasattr(req, 'role') and req.role else "admin",
+        "organization_id": current_admin.organization_id,
+        "created_at": datetime.now(timezone.utc),
+        "allowed_features": ["dashboard", "employees", "attendance", "leaves", "expenses", "reports", "war_room", "territory", "nudge", "leaderboard"]
     }
     await admins_collection.insert_one(new_admin)
     return {"message": f"Admin {req.full_name} created successfully."}
@@ -1258,16 +1413,16 @@ async def create_sub_admin(req: SubAdminCreate, current_admin: Admin = Depends(g
 @app.delete("/admin/sub-admins/{email}")
 async def delete_sub_admin(email: str, current_admin: Admin = Depends(get_current_admin)):
     """Remove a sub-admin (Owner/Superadmin only)."""
-    if current_admin.get("role") not in ["owner", "superadmin"]:
-        raise HTTPException(status_code=403, detail="Only organization owners can remove admins.")
+    if current_admin.role not in ["owner", "superadmin", "admin"]:
+        raise HTTPException(status_code=403, detail="Only organization owners/admins can remove admins.")
         
-    if email == current_admin["email"]:
+    if email == current_admin.email:
         raise HTTPException(status_code=400, detail="You cannot delete yourself.")
         
     # Security: Ensure we only delete admins from the same organization and who are NOT owners
     result = await admins_collection.delete_one({
         "email": email,
-        "organization_id": current_admin.get("organization_id"),
+        "organization_id": current_admin.organization_id,
         "role": "admin" # Can only delete sub-admins, not owners
     })
     
@@ -1277,11 +1432,51 @@ async def delete_sub_admin(email: str, current_admin: Admin = Depends(get_curren
     return {"message": f"Admin {email} removed successfully."}
 
 
+@app.get("/admin/me")
+async def get_admin_me(current_admin: Admin = Depends(get_current_admin)):
+    """Return current admin's profile including role and allowed features."""
+    admin_data = {
+        "email": current_admin.email,
+        "full_name": current_admin.full_name,
+        "role": current_admin.role,
+        "organization_id": current_admin.organization_id,
+    }
+    # owner, superadmin, and admin get all features by default
+    if current_admin.role in ["owner", "superadmin", "admin"]:
+        admin_data["allowed_features"] = ["dashboard", "employees", "attendance", "leaves", "expenses", "reports", "war_room", "territory", "nudge", "leaderboard", "sub_admins", "settings"]
+    else:
+        admin_data["allowed_features"] = current_admin.allowed_features or ["dashboard", "employees", "attendance"]
+    return admin_data
+
+
+@app.put("/admin/sub-admins/{email}/permissions")
+async def update_sub_admin_permissions(email: str, req: dict, current_admin: Admin = Depends(get_current_admin)):
+    """Update feature-level permissions for a sub-admin (Owner/Superadmin only)."""
+    if current_admin.role not in ["owner", "superadmin", "admin"]:
+        raise HTTPException(status_code=403, detail="Only organization owners/admins can update permissions.")
+    
+    allowed_features = req.get("allowed_features", [])
+    role = req.get("role")  # optionally update role too
+    
+    update_fields = {"allowed_features": allowed_features}
+    if role:
+        update_fields["role"] = role
+    
+    result = await admins_collection.update_one(
+        {"email": email, "organization_id": current_admin.organization_id},
+        {"$set": update_fields}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Sub-admin not found.")
+    
+    return {"message": f"Permissions for {email} updated successfully."}
+
+
 # NOTE: Duplicate /admin/stats removed. The authenticated version is at line ~2063.
 
 
 @app.get("/admin/employees")
-async def admin_list_employees(current_admin: dict = Depends(get_current_admin)):
+async def admin_list_employees(current_admin: Admin = Depends(get_current_admin)):
     """List all employees for management (Role Scoped)."""
     filter_query = get_employee_filter(current_admin)
     cursor = employees_collection.find(filter_query, {"hashed_password": 0, "face_embedding": 0})
@@ -1299,8 +1494,8 @@ async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: 
         raise HTTPException(status_code=400, detail="No update data provided")
     
     query = {"email": email}
-    if current_admin.get("organization_id"):
-        query["organization_id"] = current_admin["organization_id"]
+    if current_admin.organization_id:
+        query["organization_id"] = current_admin.organization_id
 
     result = await employees_collection.update_one(query, {"$set": update_data})
     if result.matched_count == 0:
@@ -1313,8 +1508,8 @@ async def admin_update_employee(email: str, req: EmployeeUpdate, current_admin: 
 async def admin_delete_employee(email: str, current_admin: Admin = Depends(get_current_admin)):
     """Remove an employee and their logs."""
     query = {"email": email}
-    if current_admin.get("organization_id"):
-        query["organization_id"] = current_admin["organization_id"]
+    if current_admin.organization_id:
+        query["organization_id"] = current_admin.organization_id
         
     user = await employees_collection.find_one(query)
     if not user:
@@ -1329,7 +1524,7 @@ async def admin_delete_employee(email: str, current_admin: Admin = Depends(get_c
 
 
 @app.get("/admin/logs")
-async def admin_all_logs(limit: int = 100, current_admin: dict = Depends(get_current_admin)):
+async def admin_all_logs(limit: int = 100, current_admin: Admin = Depends(get_current_admin)):
     """Fetch all attendance logs for the organization (Role Scoped)."""
     filter_query = get_employee_filter(current_admin)
     
@@ -1341,7 +1536,7 @@ async def admin_all_logs(limit: int = 100, current_admin: dict = Depends(get_cur
     else:
         # For non-manager admins, we still need to filter by org usually
         # but our helper handles that mapping based on roles
-        org_employees = await employees_collection.find({"organization_id": current_admin.get("organization_id")}, {"_id": 1}).to_list(None)
+        org_employees = await employees_collection.find({"organization_id": current_admin.organization_id}, {"_id": 1}).to_list(None)
         org_emp_ids = [str(emp["_id"]) for emp in org_employees]
         log_query = {"user_id": {"$in": org_emp_ids}}
 
@@ -1380,7 +1575,7 @@ async def admin_create_employee(req: RegisterRequest, current_admin: Admin = Dep
         "device_id": None, # Force bind on first use
         "created_at": datetime.now(timezone.utc),
         "needs_face_enrollment": True if not embedding else False,
-        "organization_id": current_admin.get("organization_id") # Bind to admin's org
+        "organization_id": current_admin.organization_id # Bind to admin's org
     }
 
     await employees_collection.insert_one(employee_dict)
@@ -1392,8 +1587,8 @@ async def admin_reset_password(email: str, req: dict, current_admin: Admin = Dep
     """Reset an employee's password."""
     # Ensure admin can only reset their own org's employees
     query = {"email": email}
-    if current_admin.get("organization_id"):
-        query["organization_id"] = current_admin["organization_id"]
+    if current_admin.organization_id:
+        query["organization_id"] = current_admin.organization_id
 
     user = await employees_collection.find_one(query)
     if not user:
@@ -1418,8 +1613,8 @@ async def admin_reset_password(email: str, req: dict, current_admin: Admin = Dep
 async def admin_clear_binding(email: str, current_admin: Admin = Depends(get_current_admin)):
     """Clear hardware binding for an employee."""
     query = {"email": email}
-    if current_admin.get("organization_id"):
-        query["organization_id"] = current_admin["organization_id"]
+    if current_admin.organization_id:
+        query["organization_id"] = current_admin.organization_id
 
     result = await employees_collection.update_one(
         query,
@@ -1432,27 +1627,51 @@ async def admin_clear_binding(email: str, current_admin: Admin = Depends(get_cur
 
 
 # --- HELPER FUNCTIONS ---
-def get_employee_filter(current_admin: dict):
+def get_employee_filter(current_admin: Admin):
     """Returns a MongoDB filter based on admin role for multi-tenant segmenting."""
-    org_id = current_admin.get("organization_id")
+    org_id = current_admin.organization_id
     if not org_id:
         # Fallback for superadmin without org
         return {}
     
-    role = current_admin.get("role")
+    role = current_admin.role
     base_filter = {"organization_id": org_id}
     
     if role == "manager":
         # Managers only see their assigned team
-        base_filter["manager_id"] = current_admin.get("email")
+        base_filter["manager_id"] = current_admin.email
         
     return base_filter
 
+async def get_scoped_employee_ids(current_admin: Admin):
+    base_filter = get_employee_filter(current_admin)
+    emps = await employees_collection.find(base_filter, {"_id": 1}).to_list(None)
+    return [str(e["_id"]) for e in emps]
+
+async def get_scoped_employee_emails(current_admin: Admin):
+    base_filter = get_employee_filter(current_admin)
+    emps = await employees_collection.find(base_filter, {"email": 1}).to_list(None)
+    return [e["email"] for e in emps]
+
+async def get_scoped_employee_employee_ids(current_admin: Admin):
+    base_filter = get_employee_filter(current_admin)
+    emps = await employees_collection.find(base_filter, {"employee_id": 1}).to_list(None)
+    return [e.get("employee_id") for e in emps if "employee_id" in e]
+
+
+def check_feature_access(admin: Admin, feature: str):
+    """Raises 403 if the admin doesn't have access to a specific feature."""
+    if admin.role in ["owner", "superadmin"]:
+        return  # Full access
+    allowed = admin.allowed_features or []
+    if feature not in allowed:
+        raise HTTPException(status_code=403, detail=f"You do not have access to the '{feature}' feature. Contact your admin.")
+
 
 @app.post("/admin/employees/bulk-assign-manager")
-async def bulk_assign_manager(req: dict, current_admin: dict = Depends(get_current_admin)):
+async def bulk_assign_manager(req: dict, current_admin: Admin = Depends(get_current_admin)):
     """Assign multiple employees to a manager by email."""
-    if current_admin.get("role") not in ["owner", "hr", "superadmin"]:
+    if current_admin.role not in ["owner", "hr", "superadmin"]:
         raise HTTPException(status_code=403, detail="Insufficient permissions to assign managers.")
     
     employee_emails = req.get("employee_emails", [])
@@ -1461,7 +1680,7 @@ async def bulk_assign_manager(req: dict, current_admin: dict = Depends(get_curre
     if not manager_email:
         raise HTTPException(status_code=400, detail="Manager email is required")
 
-    org_id = current_admin.get("organization_id")
+    org_id = current_admin.organization_id
     
     result = await employees_collection.update_many(
         {"email": {"$in": employee_emails}, "organization_id": org_id},
@@ -1472,9 +1691,9 @@ async def bulk_assign_manager(req: dict, current_admin: dict = Depends(get_curre
 
 
 @app.get("/admin/settings")
-async def get_settings(current_admin: dict = Depends(get_current_admin)):
+async def get_settings(current_admin: Admin = Depends(get_current_admin)):
     """Retrieve organization-specific configuration."""
-    org_id = current_admin.get("organization_id")
+    org_id = current_admin.organization_id
     if not org_id:
          # Fallback to global config for superadmins or unlinked orgs
          settings = await settings_collection.find_one({"id": "config"})
@@ -1487,13 +1706,16 @@ async def get_settings(current_admin: dict = Depends(get_current_admin)):
 
 
 @app.put("/admin/settings")
-async def update_settings(req: SystemSettings, current_admin: dict = Depends(get_current_admin)):
+async def update_settings(req: SystemSettings, current_admin: Admin = Depends(get_current_admin)):
     """Update organization-specific configuration and branding."""
-    org_id = current_admin.get("organization_id")
+    org_id = current_admin.organization_id
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization linkage required for settings update.")
 
     update_dict = req.dict()
+    # Explicitly handle logo_url to ensure it's not lost if not provided in request but exists in DB
+    # However, since req is a SystemSettings model, it will have logo_url (even if None)
+    
     update_dict["organization_id"] = org_id
     update_dict["updated_at"] = datetime.now(timezone.utc)
 
@@ -1506,9 +1728,10 @@ async def update_settings(req: SystemSettings, current_admin: dict = Depends(get
 
     # Branding persistence to organization collection
     branding_update = {}
-    if hasattr(req, "primary_color") or "primary_color" in update_dict:
+    if update_dict.get("primary_color"):
         branding_update["primary_color"] = update_dict.get("primary_color")
-    # Note: logo_url could be added here if included in SystemSettings model or passed via another field
+    if update_dict.get("logo_url"):
+        branding_update["logo_url"] = update_dict.get("logo_url")
     
     if branding_update:
         await organizations_collection.update_one(
@@ -1517,6 +1740,33 @@ async def update_settings(req: SystemSettings, current_admin: dict = Depends(get
         )
 
     return {"message": "Settings and branding updated successfully"}
+
+
+@app.post("/admin/upload-logo")
+async def admin_upload_logo(file: bytes = File(...), current_admin: Admin = Depends(get_current_admin)):
+    """Upload organization logo image."""
+    try:
+        org_id = current_admin.organization_id
+        if not org_id:
+            raise HTTPException(status_code=403, detail="Organization context required")
+
+        # Generate unique filename
+        file_extension = "png" # Default, or we could extract from headers
+        filename = f"logo_{org_id}_{uuid.uuid4().hex[:8]}.{file_extension}"
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        
+        with open(file_path, "wb") as buffer:
+            buffer.write(file)
+            
+        # Generate full URL
+        # In production this should be the full domain, for now relative or configured base
+        base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+        logo_url = f"{base_url}/uploads/{filename}"
+        
+        return {"logo_url": logo_url}
+    except Exception as e:
+        logger.error(f"Logo upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Logo upload failed: {str(e)}")
 
 
 @app.get("/settings")
@@ -1820,7 +2070,7 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
             "check_in_lat": agent_lat,
             "check_in_lng": agent_lng,
             "check_in_accuracy": req.get("accuracy", 0),
-            "place_name": req["place_name"],
+            "place_name": target_stop.get("place_name") if (target_stop and target_stop.get("place_name")) else req.get("place_name", "Unknown"),
             "visit_plan_stop_id": stop_id,
             "geofence_validated": geofence_validated,
             "geofence_distance_meters": geofence_distance,
@@ -1839,7 +2089,7 @@ async def visit_check_in(req: dict, employee=Depends(get_current_employee)):
 
 
 @app.post("/api/field/visit/check-out")
-async def visit_check_out(req: dict, employee=Depends(get_current_employee)):
+async def visit_check_out(req: dict, background_tasks: BackgroundTasks, employee=Depends(get_current_employee)):
     """Log check-out with remarks, media, person met, and outcome."""
     try:
         # Security: Verify that this visit belongs to the organization
@@ -2187,9 +2437,12 @@ async def get_agent_trail(employee_email: str, admin=Depends(get_current_admin))
         now = datetime.now(timezone.utc)
         start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
         
-        emp = await employees_collection.find_one({"email": employee_email, "organization_id": admin["organization_id"]})
+        base_filter = get_employee_filter(admin)
+        emp_query = {"email": employee_email, **base_filter}
+        
+        emp = await employees_collection.find_one(emp_query)
         if not emp:
-            raise HTTPException(status_code=404, detail="Employee not found")
+            raise HTTPException(status_code=404, detail="Employee not found or unauthorized")
 
         pings = await location_pings_collection.find({
             "employee_id": employee_email,
@@ -2732,87 +2985,105 @@ async def export_logs_pdf(admin=Depends(get_current_admin)):
 @app.get("/admin/field/live-status")
 async def get_field_live_status(admin=Depends(get_current_admin)):
     """Live operational data for the War Room map."""
-    query = {"employee_type": "field"}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    try:
+        # Apply RBAC: managers see only their team
+        base_filter = get_employee_filter(admin)
+        query = {**base_filter, "employee_type": "field"}
+            
+        field_emps = await employees_collection.find(query).to_list(length=100)
         
-    field_emps = await employees_collection.find(query).to_list(length=100)
-    
-    agents = []
-    active_count = 0
-    idle_count = 0
-    breach_count = 0
-    
-    now = datetime.now(timezone.utc)
-    
-    for emp in field_emps:
-        # Get latest ping
-        ping = await location_pings_collection.find_one(
-            {"employee_id": emp["email"]},
-            sort=[("timestamp", -1)]
-        )
+        agents = []
+        active_count = 0
+        idle_count = 0
+        breach_count = 0
+        now = datetime.now(timezone.utc)
         
-        status = "Inactive"
-        current_visit = None
+        for emp in field_emps:
+            try:
+                # 1. Get latest ping
+                ping = await location_pings_collection.find_one(
+                    {"employee_id": emp["email"]},
+                    sort=[("recorded_at", -1)]
+                )
+                
+                status = "Inactive"
+                current_visit = None
+                
+                # 2. Check active check-in
+                active_visit_log = await visit_logs_collection.find_one(
+                    {"employee_id": emp["email"], "check_out": None},
+                    sort=[("check_in", -1)]
+                )
+                
+                if active_visit_log and active_visit_log.get("visit_id"):
+                    plan = await visit_plans_collection.find_one({
+                        "organization_id": emp["organization_id"],
+                        "stops.visit_id": active_visit_log["visit_id"]
+                    })
+                    if plan:
+                        current_stop = next((s for s in plan.get("stops", []) if s.get("visit_id") == active_visit_log["visit_id"]), None)
+                        if current_stop:
+                            current_visit = current_stop["place_name"]
         
-        # Check active check-in
-        active_visit_log = await visit_logs_collection.find_one(
-            {"employee_id": emp["email"], "check_out": None},
-            sort=[("check_in", -1)]
-        )
-        
-        if active_visit_log:
-            # Enrich with Visit/Customer details
-            plan = await visit_plans_collection.find_one({
-                "organization_id": emp["organization_id"],
-                "stops.visit_id": active_visit_log["visit_id"]
-            })
-            if plan:
-                current_stop = next((s for s in plan["stops"] if s["visit_id"] == active_visit_log["visit_id"]), None)
-                if current_stop:
-                    current_visit = current_stop["place_name"]
-
-        if ping:
-            ping_time = ping["timestamp"].replace(tzinfo=timezone.utc) if ping["timestamp"].tzinfo is None else ping["timestamp"]
-            # If ping is within last 10 mins, mark active (was 30)
-            if now - ping_time < timedelta(minutes=10):
-                status = "On-Site" if active_visit_log else "Traveling"
-                active_count += 1
-            else:
-                status = "Idle"
-                idle_count += 1
-        
-        # Real-time KM calculation for today
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        pings_today = await location_pings_collection.count_documents({
-            "employee_id": emp["email"],
-            "recorded_at": {"$gte": start_of_day}
-        })
-        
-        km_today = 0.0
-        # For performance, maybe use a cached value, but for live-status let's use a quick approximation or mock if too heavy
-        # For now, let's keep it lean or use the km-suggestion logic partially
-        
-        agents.append({
-            "id": str(emp["_id"]),
-            "email": emp["email"],
-            "name": emp["full_name"],
-            "lat": ping["lat"] if ping else None,
-            "lng": ping["lng"] if ping else None,
-            "status": status,
-            "current_visit": current_visit,
-            "last_ping": ping["timestamp"].isoformat() if ping else None,
-            "km_today": round(pings_today * 0.1, 1) # Simple mock: 100m per ping for visual impact
-        })
-        
-    return {
-        "agents": agents,
-        "stats": {
-            "active": active_count,
-            "idle": idle_count,
-            "breach": breach_count 
+                # 3. Status logic
+                if ping and ping.get("recorded_at"):
+                    rp = ping["recorded_at"]
+                    if isinstance(rp, str):
+                        try:
+                            rp = datetime.fromisoformat(rp.replace("Z", "+00:00"))
+                        except:
+                            rp = now
+                    
+                    ping_time = rp.replace(tzinfo=timezone.utc) if rp.tzinfo is None else rp
+                    if now - ping_time < timedelta(minutes=10):
+                        status = "On-Site" if active_visit_log else "Traveling"
+                        active_count += 1
+                    else:
+                        status = "Idle"
+                        idle_count += 1
+                
+                # 4. KM today calculation
+                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                pings_today = await location_pings_collection.count_documents({
+                    "employee_id": emp["email"],
+                    "recorded_at": {"$gte": start_of_day}
+                })
+                
+                # 5. Format response object
+                lp = ping.get("recorded_at") if ping else None
+                if isinstance(lp, datetime):
+                    lp = lp.isoformat()
+                    
+                agents.append({
+                    "id": str(emp["_id"]),
+                    "email": str(emp["email"]),
+                    "name": str(emp.get("full_name", emp["email"])),
+                    "lat": float(ping.get("lat")) if ping and ping.get("lat") is not None else None,
+                    "lng": float(ping.get("lng")) if ping and ping.get("lng") is not None else None,
+                    "status": str(status),
+                    "current_visit": str(current_visit) if current_visit else None,
+                    "last_ping": str(lp) if lp else None,
+                    "km_today": float(round(pings_today * 0.1, 1)),
+                    "territory": emp.get("territory")
+                })
+            except Exception as e:
+                logger.error(f"Inner loop error for {emp.get('email')}: {e}")
+                continue
+                
+        res_data = {
+            "agents": agents,
+            "stats": {
+                "active": int(active_count),
+                "idle": int(idle_count),
+                "breach": int(breach_count)
+            }
         }
-    }
+        return JSONResponse(content=res_data)
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        logger.error(f"TOP LEVEL LIVE STATUS ERROR: {err}")
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": err})
 
 
 @app.get("/admin/employees")
@@ -2999,7 +3270,17 @@ async def get_heatmap_data(admin=Depends(get_current_admin)):
     now = datetime.now(timezone.utc)
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    query = {"organization_id": admin["organization_id"], "recorded_at": {"$gte": start_of_day}}
+    base_filter = get_employee_filter(admin)
+    query = {"recorded_at": {"$gte": start_of_day}}
+    
+    if "organization_id" in base_filter:
+        query["organization_id"] = base_filter["organization_id"]
+        
+    if "manager_id" in base_filter:
+        team = await employees_collection.find({"manager_id": base_filter["manager_id"]}).to_list(length=100)
+        team_emails = [e["email"] for e in team]
+        query["employee_id"] = {"$in": team_emails}
+        
     pings = await location_pings_collection.find(query).to_list(length=5000)
     
     # Format for Leaflet.heat: [[lat, lng, intensity], ...]
@@ -3066,12 +3347,9 @@ async def attendance_report(
 ):
     """Generate attendance report with filters."""
     query = {}
-    if admin.get("organization_id"):
-        org_employees = await employees_collection.find(
-            {"organization_id": admin["organization_id"]}, {"_id": 1}
-        ).to_list(None)
-        org_emp_ids = [str(emp["_id"]) for emp in org_employees]
-        query["user_id"] = {"$in": org_emp_ids}
+    
+    scoped_ids = await get_scoped_employee_ids(admin)
+    query["user_id"] = {"$in": scoped_ids}
     
     if start_date:
         query["timestamp"] = {"$gte": datetime.fromisoformat(start_date)}
@@ -3114,8 +3392,8 @@ async def attendance_report(
 async def expense_report(admin=Depends(get_current_admin)):
     """Generate expense summary report."""
     query = {}
-    if admin.get("organization_id"):
-        query["organization_id"] = admin["organization_id"]
+    scoped_emails = await get_scoped_employee_emails(admin)
+    query["employee_email"] = {"$in": scoped_emails}
     
     claims = await expense_claims_collection.find(query).to_list(length=1000)
     
@@ -3158,10 +3436,12 @@ async def agent_performance_report(
         except ValueError:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+    scoped_emp_ids = await get_scoped_employee_employee_ids(admin)
 
     pipeline = [
         {"$match": {
             "organization_id": org_id,
+            "employee_id": {"$in": scoped_emp_ids},
             "check_in_time": {"$gte": start_dt, "$lte": end_dt}
         }},
         {"$group": {
@@ -3223,7 +3503,10 @@ async def leave_report(
     admin=Depends(get_current_admin)
 ):
     """Generate leave analytics report."""
-    query = {"organization_id": admin["organization_id"]}
+    query = {}
+    scoped_emails = await get_scoped_employee_emails(admin)
+    query["employee_email"] = {"$in": scoped_emails}
+    
     if start_date and end_date:
         query["start_date"] = {"$gte": start_date, "$lte": end_date}
     
@@ -3278,10 +3561,12 @@ async def conversion_funnel_report(
     else:
         start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+    scoped_emp_ids = await get_scoped_employee_employee_ids(admin)
 
     pipeline = [
         {"$match": {
             "organization_id": org_id,
+            "employee_id": {"$in": scoped_emp_ids},
             "check_in_time": {"$gte": start_dt, "$lte": end_dt}
         }},
         {"$group": {
@@ -3319,9 +3604,12 @@ async def visit_frequency_report(
         start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
 
+    scoped_emp_ids = await get_scoped_employee_employee_ids(admin)
+
     pipeline_daily = [
         {"$match": {
             "organization_id": org_id,
+            "employee_id": {"$in": scoped_emp_ids},
             "check_in_time": {"$gte": start_dt, "$lte": end_dt}
         }},
         {"$group": {
@@ -3581,6 +3869,196 @@ async def get_nudge_history(manager=Depends(get_current_employee)):
             log["sent_at"] = log["sent_at"].isoformat()
 
     return logs
+
+@app.post("/admin/nudge")
+async def admin_send_nudge(req: dict, admin=Depends(get_current_admin)):
+    """Admin sends a motivational nudge to field team members in their organization."""
+    org_id = admin.get("organization_id")
+    employee_emails = req.get("employee_emails", [])
+    message = req.get("message", "").strip()
+    nudge_type = req.get("nudge_type", "general")
+
+    if not employee_emails:
+        raise HTTPException(status_code=400, detail="At least one employee email is required.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Nudge message cannot be empty.")
+
+    # Verify recipients belong to same organization
+    valid_recipients = []
+    for email in employee_emails:
+        query = {"email": email}
+        if org_id:
+            query["organization_id"] = org_id
+            
+        emp = await employees_collection.find_one(query)
+        if emp:
+            valid_recipients.append(email)
+
+    if not valid_recipients:
+        raise HTTPException(status_code=400, detail="No valid employees found in your organization.")
+
+    nudge_log = {
+        "admin_id": admin["email"],
+        "admin_name": admin.get("name", admin["email"]),
+        "organization_id": org_id,
+        "recipients": valid_recipients,
+        "message": message,
+        "nudge_type": nudge_type,
+        "sent_at": datetime.now(timezone.utc),
+    }
+    result = await nudge_logs_collection.insert_one(nudge_log)
+    return {
+        "status": "sent",
+        "nudge_id": str(result.inserted_id),
+        "recipients_count": len(valid_recipients),
+        "message": f"Nudge sent to {len(valid_recipients)} member(s)."
+    }
+
+
+@app.get("/admin/nudge/history")
+async def admin_get_nudge_history(admin=Depends(get_current_admin)):
+    """Fetch history of nudges sent by admins in this organization."""
+    query = {}
+    if admin.get("organization_id"):
+        query["organization_id"] = admin["organization_id"]
+        
+    logs = await nudge_logs_collection.find(query).sort("sent_at", -1).to_list(length=50)
+
+    for log in logs:
+        log["_id"] = str(log["_id"])
+        if isinstance(log.get("sent_at"), datetime):
+            log["sent_at"] = log["sent_at"].isoformat()
+
+    return logs
+
+@app.get("/admin/leaderboard")
+async def get_admin_leaderboard(admin=Depends(get_current_admin)):
+    """
+    Weekly leaderboard for Admin Portal: Top 10 agents in the organization.
+    """
+    org_id = admin.get("organization_id")
+
+    # Current week boundaries (Mon 00:00 → Sun 23:59)
+    today = datetime.now(timezone.utc)
+    week_start = today - timedelta(days=today.weekday())
+    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_end = week_start + timedelta(days=7)
+
+    pipeline = [
+        {
+            "$match": {
+                "organization_id": org_id,
+                "check_in_time": {"$gte": week_start, "$lt": week_end}
+            }
+        },
+        {
+            "$group": {
+                "_id": "$employee_id",
+                "visits_completed": {"$sum": 1},
+                "leads_captured": {"$sum": {"$cond": ["$lead_captured", 1, 0]}},
+                "orders_captured": {"$sum": {"$cond": ["$order_captured", 1, 0]}},
+            }
+        },
+        {"$sort": {"visits_completed": -1, "leads_captured": -1}},
+        {"$limit": 10}
+    ]
+
+    results = await visit_logs_collection.aggregate(pipeline).to_list(length=10)
+
+    leaderboard = []
+    for idx, row in enumerate(results):
+        emp = await employees_collection.find_one({"email": row["_id"]})
+        emp_name = emp["full_name"] if emp else row["_id"]
+        emp_designation = emp.get("designation", "Field Agent") if emp else "Field Agent"
+
+        # Sum KM for the week from location pings
+        pings = await location_pings_collection.find({
+            "employee_id": row["_id"],
+            "recorded_at": {"$gte": week_start, "$lt": week_end}
+        }).sort("recorded_at", 1).to_list(length=5000)
+
+        total_km = 0.0
+        for i in range(1, len(pings)):
+            p1, p2 = pings[i - 1], pings[i]
+            dlat = math.radians(p2["lat"] - p1["lat"])
+            dlng = math.radians(p2["lng"] - p1["lng"])
+            a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(p1["lat"])) * math.cos(math.radians(p2["lat"])) * math.sin(dlng / 2) ** 2
+            total_km += 6371.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        leaderboard.append({
+            "rank": idx + 1,
+            "employee_id": row["_id"],
+            "name": emp_name,
+            "designation": emp_designation,
+            "visits_completed": row["visits_completed"],
+            "leads_captured": row["leads_captured"],
+            "orders_captured": row["orders_captured"],
+            "distance_km": round(total_km, 1),
+            "is_me": False, # Admins are not usually in the leaderboard
+        })
+
+    return {
+        "week_start": week_start.strftime("%Y-%m-%d"),
+        "week_end": (week_end - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "leaderboard": leaderboard
+    }
+
+# -----------------------------------------------------------------------------
+# DATA SYNC & BULK MANAGEMENT
+# -----------------------------------------------------------------------------
+
+@app.get("/api/me/sync-status")
+async def get_sync_status(last_sync: Optional[str] = None, employee=Depends(get_current_employee)):
+    """Check for new data to sync to the mobile app."""
+    # Simplified sync payload for pulling latest configurations
+    profile = {
+        "employee_id": employee.get("employee_id"),
+        "full_name": employee.get("full_name"),
+        "manager_id": employee.get("manager_id"),
+        "territory": employee.get("territory"),
+        "employee_type": employee.get("employee_type")
+    }
+    
+    now = datetime.now(timezone.utc)
+    
+    return {
+        "status": "success",
+        "latest_profile": profile,
+        "server_time": now.isoformat(),
+        "requires_full_sync": True
+    }
+
+
+@app.post("/admin/employees/bulk-update")
+async def admin_bulk_update_employees(req: dict, admin=Depends(get_current_admin)):
+    """Bulk update fields (like manager assignment or territory) for multiple employees."""
+    employee_emails = req.get("employee_emails", [])
+    updates = req.get("updates", {})
+    
+    if not employee_emails or not updates:
+        raise HTTPException(status_code=400, detail="Missing emails or updates")
+        
+    # Security: Ensure admin only updates records they have access to
+    base_filter = get_employee_filter(admin)
+    query = {"email": {"$in": employee_emails}, **base_filter}
+    
+    # Restrict allowed update fields directly
+    allowed_updates = ["manager_id", "territory", "employee_type"]
+    filtered_updates = {k: v for k, v in updates.items() if k in allowed_updates}
+    
+    if not filtered_updates:
+        raise HTTPException(status_code=400, detail="No valid update fields provided")
+        
+    result = await employees_collection.update_many(
+        query,
+        {"$set": filtered_updates}
+    )
+    
+    return {
+        "status": "success",
+        "modified_count": result.modified_count,
+        "matched_count": result.matched_count
+    }
 
 
 if __name__ == "__main__":

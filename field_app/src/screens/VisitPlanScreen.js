@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
 import { Plus, Trash2, Send, MapPin, X, FolderOpen, Save, ChevronDown } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { getFriendlyErrorMessage } from '../utils/errorUtils';
 
 export default function VisitPlanScreen({ navigation }) {
     const { user, organization } = useAuth();
@@ -98,9 +99,12 @@ export default function VisitPlanScreen({ navigation }) {
             }));
 
             const payload = {
+                employee_id: user.email,
+                organization_id: user.organization_id,
                 date: new Date().toISOString().split('T')[0],
                 stops: formattedStops
             };
+
 
             await client.post('/api/field/plan', payload);
 
@@ -117,13 +121,11 @@ export default function VisitPlanScreen({ navigation }) {
                 }
             }
 
-            Alert.alert('Success', 'Visit plan submitted. Your manager will review it shortly.', [
-                { text: 'Done', onPress: () => navigation.goBack() }
-            ]);
+            Alert.alert('✅ Success', 'Visit plan submitted successfully');
+            setStops([]);
+            navigation.goBack();
         } catch (e) {
-            const detail = e.response?.data?.detail;
-            const msg = typeof detail === 'string' ? detail : JSON.stringify(detail) || 'Failed to submit plan';
-            Alert.alert('Submission Failed', msg);
+            Alert.alert('Submission Failed', getFriendlyErrorMessage(e, 'Could not submit your visit plan.'));
         } finally {
             setLoading(false);
         }

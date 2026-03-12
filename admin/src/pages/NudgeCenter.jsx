@@ -43,7 +43,7 @@ export default function NudgeCenter() {
         try {
             const [teamRes, historyRes] = await Promise.allSettled([
                 api.get('/admin/employees'),
-                api.get('/api/manager/nudge/history'),
+                api.get('/admin/nudge/history'),
             ]);
             if (teamRes.status === 'fulfilled') {
                 const fieldTeam = (teamRes.value.data || []).filter(e => e.employee_type === 'field');
@@ -72,7 +72,7 @@ export default function NudgeCenter() {
         if (selectedEmails.length === 0 || !message.trim()) return;
         setSending(true);
         try {
-            await api.post('/api/manager/nudge', {
+            await api.post('/admin/nudge', {
                 employee_emails: selectedEmails,
                 message: message.trim(),
                 nudge_type: nudgeType,
@@ -111,8 +111,8 @@ export default function NudgeCenter() {
                             key={tab}
                             onClick={() => setActiveTab(tab)}
                             className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === tab
-                                    ? 'bg-white/10 text-white border border-white/10'
-                                    : 'text-slate-400 hover:text-white'
+                                ? 'bg-white/10 text-white border border-white/10'
+                                : 'text-slate-400 hover:text-white'
                                 }`}
                         >
                             {tab === 'compose' ? '✏️ Compose' : '📋 History'}
@@ -136,8 +136,8 @@ export default function NudgeCenter() {
                                             key={t.key}
                                             onClick={() => { setNudgeType(t.key); setMessage(''); }}
                                             className={`flex items-center gap-2 p-3 rounded-xl border transition-all text-sm font-semibold ${nudgeType === t.key
-                                                    ? 'border-white/20 bg-white/5'
-                                                    : 'border-slate-800 hover:border-slate-700'
+                                                ? 'border-white/20 bg-white/5'
+                                                : 'border-slate-800 hover:border-slate-700'
                                                 }`}
                                             style={nudgeType === t.key ? { color: t.color } : { color: '#94a3b8' }}
                                         >
@@ -158,8 +158,8 @@ export default function NudgeCenter() {
                                         key={i}
                                         onClick={() => setMessage(msg)}
                                         className={`text-xs px-3 py-2 rounded-lg border transition-all ${message === msg
-                                                ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-400'
-                                                : 'border-slate-800 text-slate-400 hover:border-slate-700'
+                                            ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-400'
+                                            : 'border-slate-800 text-slate-400 hover:border-slate-700'
                                             }`}
                                     >
                                         {msg}
@@ -217,8 +217,8 @@ export default function NudgeCenter() {
                                         key={m.email}
                                         onClick={() => toggleMember(m.email)}
                                         className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${selectedEmails.includes(m.email)
-                                                ? 'border-indigo-500/30 bg-indigo-500/10'
-                                                : 'border-slate-800 hover:border-slate-700'
+                                            ? 'border-indigo-500/30 bg-indigo-500/10'
+                                            : 'border-slate-800 hover:border-slate-700'
                                             }`}
                                     >
                                         <div

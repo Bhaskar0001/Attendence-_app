@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { LinearGradient } from 'expo-linear-gradient';
+import { getFriendlyErrorMessage } from '../utils/errorUtils';
 
 export default function LoginScreen() {
     const [email, setEmail] = useState('');
@@ -25,10 +26,12 @@ export default function LoginScreen() {
         try {
             const result = await login(cleanEmail, cleanPassword, organization.organization_id);
             if (!result.success) {
-                throw new Error(result.message);
+                // If the app logic returns success: false, we still treat it as an error
+                Alert.alert('Login Failed', result.message || 'Invalid credentials');
+                return;
             }
         } catch (e) {
-            Alert.alert('Login Failed', e.message);
+            Alert.alert('Login Failed', getFriendlyErrorMessage(e, 'Incorrect email or password.'));
         } finally {
             setLoading(false);
         }

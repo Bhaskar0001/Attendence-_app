@@ -20,7 +20,7 @@ export default function TeamLeaderboard() {
     const fetchLeaderboard = async () => {
         setLoading(true);
         try {
-            const res = await api.get('/api/field/leaderboard');
+            const res = await api.get('/admin/leaderboard');
             setData(res.data || { leaderboard: [], week_start: '', week_end: '' });
         } catch (e) {
             console.error('Failed to fetch leaderboard', e);

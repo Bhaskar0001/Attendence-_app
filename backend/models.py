@@ -170,6 +170,12 @@ class LoginResponse(BaseModel):
     token_type: str
     user: EmployeeProfile
     needs_face_enrollment: Optional[bool] = None
+    force_password_change: Optional[bool] = False
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 
 class RegisterRequest(BaseModel):
@@ -178,7 +184,7 @@ class RegisterRequest(BaseModel):
     employee_id: str
     designation: str
     department: str
-    organization_id: str
+    organization_id: Optional[str] = None
     password: str
     face_image: Optional[str] = None
     device_id: Optional[str] = None
@@ -221,7 +227,9 @@ class UpdateFaceRequest(BaseModel):
 
 
 class AdminRole(str, Enum):
+    SUPERADMIN = "superadmin"
     OWNER = "owner"
+    ADMIN = "admin"
     HR = "hr"
     SUPPORT = "support"
     MANAGER = "manager"
@@ -241,6 +249,7 @@ class Admin(BaseModel):
     full_name: str
     role: AdminRole = AdminRole.HR
     organization_id: str
+    allowed_features: List[str] = ["dashboard"]
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -286,6 +295,7 @@ class SystemSettings(BaseModel):
     required_hours: float = 8.0
     timezone_offset: int = 330
     primary_color: Optional[str] = "#6366f1"
+    logo_url: Optional[str] = None
 
 
 # Field Force Specific Models
@@ -351,9 +361,9 @@ class VisitMedia(BaseModel):
 
 
 class LocationPing(BaseModel):
-    employee_id: str
-    organization_id: str
-    attendance_id: str
+    employee_id: Optional[str] = None
+    organization_id: Optional[str] = None
+    attendance_id: Optional[str] = None
     lat: float
     lng: float
     accuracy: float

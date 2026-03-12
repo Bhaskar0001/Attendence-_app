@@ -32,26 +32,33 @@ const Sidebar = () => {
     const { logout, admin, organization } = useAuth();
     const navigate = useNavigate();
 
-    const menuItems = [
-        { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
-        { icon: Users, label: 'Employee Mgmt', path: '/dashboard/employees' },
-        ...(admin?.role === 'owner' || admin?.role === 'superadmin' ? [
-            { icon: Shield, label: 'Team Management', path: '/dashboard/admins' }
-        ] : []),
-        { icon: Network, label: 'Org Structure', path: '/dashboard/org' },
-        { icon: CalendarCheck, label: 'Attendance Logs', path: '/dashboard/logs' },
-        { icon: Navigation, label: 'Field War Room', path: '/dashboard/war-room' },
-        { icon: Target, label: 'Territory Manager', path: '/dashboard/territories' },
-        { icon: ClipboardCheck, label: 'Visit Approvals', path: '/dashboard/approvals' },
-        { icon: AlertTriangle, label: 'Alerts Center', path: '/dashboard/alerts' },
-        { icon: ShieldX, label: 'Fraud Dashboard', path: '/dashboard/fraud' },
-        { icon: PlaneTakeoff, label: 'Leave Management', path: '/dashboard/leave' },
-        { icon: Receipt, label: 'Expense Approvals', path: '/dashboard/expenses' },
-        { icon: Zap, label: 'Nudge Center', path: '/dashboard/nudge' },
-        { icon: Trophy, label: 'Team Leaderboard', path: '/dashboard/leaderboard' },
-        { icon: FileText, label: 'Reports', path: '/dashboard/reports' },
-        { icon: Settings, label: 'Settings', path: '/dashboard/settings' },
+    const isOwner = admin?.role === 'owner' || admin?.role === 'superadmin' || admin?.role === 'admin';
+    const allowed = admin?.allowed_features || [];
+
+    const ALL_MENU_ITEMS = [
+        { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard', featureId: 'dashboard' },
+        { icon: Users, label: 'Employee Mgmt', path: '/dashboard/employees', featureId: 'employees' },
+        { icon: Shield, label: 'Team Management', path: '/dashboard/admins', adminOnly: true },
+        { icon: Network, label: 'Org Structure', path: '/dashboard/org', adminOnly: true },
+        { icon: CalendarCheck, label: 'Attendance Logs', path: '/dashboard/logs', featureId: 'attendance' },
+        { icon: Navigation, label: 'Field War Room', path: '/dashboard/war-room', featureId: 'war_room' },
+        { icon: Target, label: 'Territory Manager', path: '/dashboard/territories', featureId: 'territory' },
+        { icon: ClipboardCheck, label: 'Visit Approvals', path: '/dashboard/approvals', featureId: 'attendance' }, // Binding to attendance for now
+        { icon: AlertTriangle, label: 'Alerts Center', path: '/dashboard/alerts', featureId: 'dashboard' },
+        { icon: ShieldX, label: 'Fraud Dashboard', path: '/dashboard/fraud', featureId: 'reports' },
+        { icon: PlaneTakeoff, label: 'Leave Management', path: '/dashboard/leave', featureId: 'leaves' },
+        { icon: Receipt, label: 'Expense Approvals', path: '/dashboard/expenses', featureId: 'expenses' },
+        { icon: Zap, label: 'Nudge Center', path: '/dashboard/nudge', featureId: 'nudge' },
+        { icon: Trophy, label: 'Team Leaderboard', path: '/dashboard/leaderboard', featureId: 'leaderboard' },
+        { icon: FileText, label: 'Reports', path: '/dashboard/reports', featureId: 'reports' },
+        { icon: Settings, label: 'Settings', path: '/dashboard/settings', adminOnly: true },
     ];
+
+    const menuItems = ALL_MENU_ITEMS.filter(item => {
+        if (isOwner) return true;
+        if (item.adminOnly) return false;
+        return allowed.includes(item.featureId);
+    });
 
     const handleLogout = () => {
         logout();
@@ -131,10 +138,10 @@ const Sidebar = () => {
                 <div className="bg-slate-950/50 rounded-2xl p-4 mb-4 border border-slate-800/50">
                     <div className="flex items-center gap-3 mb-1">
                         <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-300">
-                            {admin?.name?.charAt(0) || 'A'}
+                            {admin?.full_name?.charAt(0) || 'A'}
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold text-white truncate">{admin?.name}</p>
+                            <p className="text-sm font-semibold text-white truncate">{admin?.full_name}</p>
                             <p className="text-[10px] text-slate-500 truncate">{admin?.email || 'admin@officeflow.ai'}</p>
                         </div>
                     </div>

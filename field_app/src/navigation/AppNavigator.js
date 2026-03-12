@@ -19,6 +19,7 @@ import TeamPortalScreen from '../screens/TeamPortalScreen';
 import LeaveDiscussionScreen from '../screens/LeaveDiscussionScreen';
 import SyncQueueScreen from '../screens/SyncQueueScreen';
 import LeaderboardScreen from '../screens/LeaderboardScreen';
+import ForceChangePasswordScreen from '../screens/ForceChangePasswordScreen';
 
 const Stack = createStackNavigator();
 
@@ -30,22 +31,26 @@ export default function AppNavigator() {
     return (
         <Stack.Navigator screenOptions={{ headerShown: false }}>
             {user ? (
-                <>
-                    <Stack.Screen name="Dashboard" component={DashboardScreen} />
-                    <Stack.Screen name="Attendance" component={AttendanceScreen} />
-                    <Stack.Screen name="VisitPlan" component={VisitPlanScreen} />
-                    <Stack.Screen name="PlanStatus" component={PlanStatusScreen} />
-                    <Stack.Screen name="RouteMap" component={RouteMapScreen} />
-                    <Stack.Screen name="ActiveVisits" component={ActiveVisitsScreen} />
-                    <Stack.Screen name="Expenses" component={ExpensesScreen} />
-                    <Stack.Screen name="LeaveRequest" component={LeaveRequestScreen} />
-                    <Stack.Screen name="Profile" component={ProfileScreen} />
-                    <Stack.Screen name="EndDaySummary" component={EndDaySummaryScreen} />
-                    <Stack.Screen name="TeamPortal" component={TeamPortalScreen} />
-                    <Stack.Screen name="LeaveDiscussion" component={LeaveDiscussionScreen} />
-                    <Stack.Screen name="SyncQueue" component={SyncQueueScreen} />
-                    <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
-                </>
+                user.force_password_change ? (
+                    <Stack.Screen name="ForceChangePassword" component={ForceChangePasswordScreen} />
+                ) : (
+                    <>
+                        <Stack.Screen name="Dashboard" component={DashboardScreen} />
+                        <Stack.Screen name="Attendance" component={AttendanceScreen} />
+                        <Stack.Screen name="VisitPlan" component={VisitPlanScreen} />
+                        <Stack.Screen name="PlanStatus" component={PlanStatusScreen} />
+                        <Stack.Screen name="RouteMap" component={RouteMapScreen} />
+                        <Stack.Screen name="ActiveVisits" component={ActiveVisitsScreen} />
+                        <Stack.Screen name="Expenses" component={ExpensesScreen} />
+                        <Stack.Screen name="LeaveRequest" component={LeaveRequestScreen} />
+                        <Stack.Screen name="Profile" component={ProfileScreen} />
+                        <Stack.Screen name="EndDaySummary" component={EndDaySummaryScreen} />
+                        <Stack.Screen name="TeamPortal" component={TeamPortalScreen} />
+                        <Stack.Screen name="LeaveDiscussion" component={LeaveDiscussionScreen} />
+                        <Stack.Screen name="SyncQueue" component={SyncQueueScreen} />
+                        <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
+                    </>
+                )
             ) : !organization ? (
                 <Stack.Screen name="OrganizationSelection" component={OrganizationSelectionScreen} />
             ) : (

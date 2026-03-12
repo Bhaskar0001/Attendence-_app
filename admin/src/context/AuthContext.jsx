@@ -9,17 +9,29 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const token = localStorage.getItem('admin_token');
-        const storedUser = localStorage.getItem('admin_user');
-        const storedOrg = localStorage.getItem('admin_org');
+        const verifySession = async () => {
+            const token = localStorage.getItem('admin_token');
+            const storedUser = localStorage.getItem('admin_user');
+            const storedOrg = localStorage.getItem('admin_org');
 
-        if (token && storedUser) {
-            setAdmin(JSON.parse(storedUser));
-            if (storedOrg) {
-                setOrganization(JSON.parse(storedOrg));
+            if (token && storedUser) {
+                // Optimistically set from local storage
+                setAdmin(JSON.parse(storedUser));
+                if (storedOrg) setOrganization(JSON.parse(storedOrg));
+
+                // Fetch fresh profile for latest allowed_features
+                try {
+                    const res = await api.get('/admin/me');
+                    setAdmin(res.data);
+                    localStorage.setItem('admin_user', JSON.stringify(res.data));
+                } catch (err) {
+                    console.error("Session verification failed", err);
+                    // if 401, we might want to logout, but for now just clear if needed.
+                }
             }
-        }
-        setLoading(false);
+            setLoading(false);
+        };
+        verifySession();
     }, []);
 
     const login = async (email, password) => {
@@ -44,7 +56,7 @@ export const AuthProvider = ({ children }) => {
             return true;
         } catch (err) {
             console.error('Login error:', err);
-            return false;
+            throw err; // Re-throw to allow UI to map the error
         }
     };
 

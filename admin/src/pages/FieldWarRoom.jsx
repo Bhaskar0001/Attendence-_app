@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, Polygon, useMap, LayersControl } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import client from '../utils/api';
 import { Users, MapPin, Navigation, AlertTriangle, Clock, Route, ShieldCheck, EyeOff } from 'lucide-react';
@@ -192,7 +192,41 @@ const FieldWarRoom = () => {
                         zoom={5}
                         style={{ height: '100%', width: '100%' }}
                     >
-                        <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+                        <LayersControl position="topright">
+                            <LayersControl.BaseLayer checked name="Dark Map">
+                                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+                            </LayersControl.BaseLayer>
+                            <LayersControl.BaseLayer name="Street Map">
+                                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                            </LayersControl.BaseLayer>
+                            <LayersControl.BaseLayer name="Satellite">
+                                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
+                            </LayersControl.BaseLayer>
+                        </LayersControl>
+
+                        {/* Render Territory Overlays */}
+                        {agents.map(agent => {
+                            if (!agent.territory) return null;
+                            if (agent.territory.type === 'radius' && agent.territory.center) {
+                                return (
+                                    <Circle
+                                        key={`territory-${agent.id}`}
+                                        center={[agent.territory.center.lat, agent.territory.center.lng]}
+                                        radius={agent.territory.radius || 1000}
+                                        pathOptions={{ color: '#10b981', fillOpacity: 0.1, dashArray: '5, 5', weight: 2 }}
+                                    />
+                                );
+                            } else if (agent.territory.type === 'polygon' && agent.territory.polygon) {
+                                return (
+                                    <Polygon
+                                        key={`territory-${agent.id}`}
+                                        positions={agent.territory.polygon.map(p => [p.lat, p.lng])}
+                                        pathOptions={{ color: '#10b981', fillOpacity: 0.1, weight: 2 }}
+                                    />
+                                );
+                            }
+                            return null;
+                        })}
 
                         {selectedAgent && selectedAgent.lat && <ZoomToSelection center={[selectedAgent.lat, selectedAgent.lng]} />}
 

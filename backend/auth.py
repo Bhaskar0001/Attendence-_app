@@ -42,6 +42,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from database import admins_collection, employees_collection
+from models import Admin
 
 admin_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="admin/login")
 employee_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -62,12 +63,27 @@ async def get_current_admin(token: str = Depends(admin_oauth2_scheme)):
         
     admin = await admins_collection.find_one({"email": email})
     if admin is None:
-        # Check hardcoded superadmin fallback
-        if email == os.getenv("ADMIN_EMAIL", "admin@officeflow.ai"):
-             return {"email": email, "role": "superadmin", "name": "Super Admin"}
+        # Check hardcoded superadmin fallback from .env
+        fallback_email = os.getenv("ADMIN_EMAIL", "admin@officeflow.ai")
+        if email == fallback_email:
+             return Admin(
+                 email=email, 
+                 role="superadmin", 
+                 full_name="System Super Admin",
+                 organization_id="system_org",
+                 allowed_features=["dashboard", "employees", "attendance", "leaves", "expenses", "reports", "war_room", "territory", "nudge", "leaderboard", "settings", "admins"]
+             )
         raise credentials_exception
+    
+    # Ensure role exists, default to 'hr' if missing for some reason
+    if "role" not in admin:
+        admin["role"] = "hr"
+    
+    # Ensure allowed_features exists
+    if "allowed_features" not in admin:
+        admin["allowed_features"] = ["dashboard"]
         
-    return admin
+    return Admin(**admin)
 
 
 async def get_current_employee(token: str = Depends(employee_oauth2_scheme)):

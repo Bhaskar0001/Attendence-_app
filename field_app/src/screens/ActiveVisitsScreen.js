@@ -12,6 +12,7 @@ import {
     Mic, MicOff, ShoppingBag, User, Briefcase, FileText, AlertTriangle
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { getFriendlyErrorMessage } from '../utils/errorUtils';
 
 export default function ActiveVisitsScreen({ navigation }) {
     const { user } = useAuth();
@@ -77,13 +78,7 @@ export default function ActiveVisitsScreen({ navigation }) {
                 : '';
             Alert.alert('✅ Checked In', `Visit started at ${stop.place_name}${distMsg}`);
         } catch (e) {
-            // Geofence rejection shows distance
-            const detail = e?.response?.data?.detail;
-            if (detail && detail.includes('away from')) {
-                Alert.alert('📍 Too Far Away', detail);
-            } else {
-                Alert.alert('Error', detail || 'Check-in failed. Ensure you are at the client site.');
-            }
+            Alert.alert('Check-in Failed', getFriendlyErrorMessage(e, 'Check-in failed. Ensure you are at the client site.'));
         } finally {
             setLoading(false);
         }

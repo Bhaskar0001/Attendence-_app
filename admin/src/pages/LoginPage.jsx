@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Shield, Lock, Mail, ArrowRight, Loader2 } from 'lucide-react';
+import { getFriendlyErrorMessage } from '../utils/errorMapper';
 import { motion } from 'framer-motion';
 
 const LoginPage = () => {
@@ -21,11 +22,9 @@ const LoginPage = () => {
             const success = await login(email, password);
             if (success) {
                 navigate('/dashboard');
-            } else {
-                setError('Invalid admin credentials. Please try again.');
             }
         } catch (err) {
-            setError('An unexpected error occurred. Please check your connection.');
+            setError(getFriendlyErrorMessage(err, 'Invalid admin credentials. Please try again.'));
         } finally {
             setIsSubmitting(false);
         }

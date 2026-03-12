@@ -57,11 +57,17 @@ const LoginScreen = ({ navigation }) => {
             await SecureStore.setItemAsync('userToken', data.access_token);
             await SecureStore.setItemAsync('userData', JSON.stringify(data.user));
 
-            navigation.navigate('Home', {
-                email: email,
-                token: data.access_token,
-                user: data.user
-            });
+            if (data.force_password_change) {
+                data.user.force_password_change = true;
+                await SecureStore.setItemAsync('userData', JSON.stringify(data.user));
+                navigation.replace('ForceChangePassword');
+            } else {
+                navigation.navigate('Home', {
+                    email: email,
+                    token: data.access_token,
+                    user: data.user
+                });
+            }
         } catch (e) {
             const errorMsg = getFriendlyErrorMessage(e, "Check your internet and try again.");
             Alert.alert('Access Denied', errorMsg);

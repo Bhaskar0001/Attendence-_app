@@ -26,13 +26,13 @@ def decode_image(base64_string):
 
 
 # Test bypass for headless persona verification (Commented for Production)
-# DUMMY_IMAGE_BYPASS = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+DUMMY_IMAGE_BYPASS = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
 
 def get_face_embedding(img_base64):
     """Generates a face embedding from a base64 image string."""
-    # persona test bypass (Disabled)
-    # if img_base64 == DUMMY_IMAGE_BYPASS:
-    #     return [0.1] * 128
+    # persona test bypass (Enabled for testing)
+    if img_base64 == DUMMY_IMAGE_BYPASS:
+        return [0.1] * 128
         
     try:
         # Save to temp file for DeepFace

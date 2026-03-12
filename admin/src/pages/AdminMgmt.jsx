@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
+import { getFriendlyErrorMessage } from '../utils/errorMapper';
 import {
     Shield,
     UserPlus,
@@ -15,9 +16,11 @@ import {
     Users,
     Headset,
     Building2,
-    Briefcase
+    Briefcase,
+    Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../context/AuthContext';
 
 const ROLE_CONFIG = {
     owner: { label: 'Owner', color: 'text-amber-500', bg: 'bg-amber-500/10', border: 'border-amber-500/30', icon: Shield, desc: 'Full control over organization & admins.' },
@@ -25,14 +28,34 @@ const ROLE_CONFIG = {
     support: { label: 'Support Desk', color: 'text-blue-500', bg: 'bg-blue-500/10', border: 'border-blue-500/30', icon: Headset, desc: 'View logs & manage basic settings.' },
     manager: { label: 'Team Manager', color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30', icon: Users, desc: 'Manage assigned team members only.' }
 };
-
 const AdminMgmt = () => {
+    const { admin: currentAdmin } = useAuth();
+    const isOwner = currentAdmin?.role === 'owner' || currentAdmin?.role === 'superadmin' || currentAdmin?.role === 'admin';
+
     const [admins, setAdmins] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddModal, setShowAddModal] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [actionMessage, setActionMessage] = useState(null);
+
+    // Permissions modal state
+    const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+    const [selectedAdminForPermissions, setSelectedAdminForPermissions] = useState(null);
+    const [permissionsForm, setPermissionsForm] = useState([]);
+
+    const AVAILABLE_FEATURES = [
+        { id: "dashboard", name: "Dashboard" },
+        { id: "employees", name: "Employee Directory" },
+        { id: "attendance", name: "Attendance Logs" },
+        { id: "leaves", name: "Leave Requests" },
+        { id: "expenses", name: "Expense Approvals" },
+        { id: "reports", name: "Reports & Analytics" },
+        { id: "war_room", name: "War Room Live" },
+        { id: "territory", name: "Territory Manager" },
+        { id: "nudge", name: "Nudge Center" },
+        { id: "leaderboard", name: "Team Leaderboard" },
+    ];
 
     // Form state
     const [formData, setFormData] = useState({
@@ -67,7 +90,7 @@ const AdminMgmt = () => {
             setFormData({ full_name: '', email: '', password: '', role: 'hr' });
             fetchAdmins();
         } catch (err) {
-            setActionMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to add admin.' });
+            setActionMessage({ type: 'error', text: getFriendlyErrorMessage(err, 'Failed to add admin.') });
         } finally {
             setIsSubmitting(false);
         }
@@ -81,9 +104,33 @@ const AdminMgmt = () => {
             setAdmins(admins.filter(a => a.email !== email));
             setActionMessage({ type: 'success', text: 'Admin removed successfully.' });
         } catch (err) {
-            setActionMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to remove admin.' });
+            setActionMessage({ type: 'error', text: getFriendlyErrorMessage(err, 'Failed to remove admin.') });
         }
     };
+
+    const handleOpenPermissions = (adminObj) => {
+        setSelectedAdminForPermissions(adminObj);
+        setPermissionsForm(adminObj.allowed_features || ["dashboard", "employees", "attendance"]);
+        setShowPermissionsModal(true);
+    };
+
+    const handleSavePermissions = async (e) => {
+        e.preventDefault();
+        setIsSubmitting(true);
+        try {
+            await api.put(`/admin/sub-admins/${selectedAdminForPermissions.email}/permissions`, {
+                allowed_features: permissionsForm
+            });
+            setActionMessage({ type: 'success', text: 'Permissions updated successfully.' });
+            setShowPermissionsModal(false);
+            fetchAdmins(); // Refresh lists
+        } catch (err) {
+            setActionMessage({ type: 'error', text: getFriendlyErrorMessage(err, 'Failed to update permissions.') });
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
 
     const filteredAdmins = admins.filter(admin =>
         admin.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -201,13 +248,24 @@ const AdminMgmt = () => {
 
                                         {/* Actions */}
                                         {admin.role !== 'owner' && (
-                                            <button
-                                                onClick={() => handleDeleteAdmin(admin.email)}
-                                                className="p-3 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
-                                                title="Revoke Admin Access"
-                                            >
-                                                <Trash2 size={20} />
-                                            </button>
+                                            <div className="flex items-center gap-1">
+                                                {isOwner && (
+                                                    <button
+                                                        onClick={() => handleOpenPermissions(admin)}
+                                                        className="p-3 text-slate-400 hover:text-primary-400 hover:bg-primary-500/10 rounded-xl transition-all"
+                                                        title="Manage Permissions"
+                                                    >
+                                                        <Settings size={20} />
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => handleDeleteAdmin(admin.email)}
+                                                    className="p-3 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+                                                    title="Revoke Admin Access"
+                                                >
+                                                    <Trash2 size={20} />
+                                                </button>
+                                            </div>
                                         )}
                                     </div>
                                 </div>
@@ -314,6 +372,75 @@ const AdminMgmt = () => {
                                     {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Create Role Account'}
                                 </button>
                             </form>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* Modal for Permissions */}
+            <AnimatePresence>
+                {showPermissionsModal && selectedAdminForPermissions && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="bg-slate-900 border border-slate-800 w-full max-w-2xl p-8 rounded-[2.5rem] shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]"
+                        >
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary-500 via-purple-500 to-indigo-500" />
+                            <button
+                                onClick={() => setShowPermissionsModal(false)}
+                                className="absolute right-6 top-6 text-slate-500 hover:text-white transition-colors"
+                            >
+                                <X size={24} />
+                            </button>
+
+                            <div className="mb-6 flex-shrink-0">
+                                <h2 className="text-2xl font-bold text-white mb-1">Feature Permissions</h2>
+                                <p className="text-slate-400">Configure access for {selectedAdminForPermissions.full_name}</p>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto min-h-0 pr-2 pb-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pb-8">
+                                    {AVAILABLE_FEATURES.map((feature) => {
+                                        const isSelected = permissionsForm.includes(feature.id);
+                                        return (
+                                            <button
+                                                key={feature.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isSelected) {
+                                                        setPermissionsForm(prev => prev.filter(id => id !== feature.id));
+                                                    } else {
+                                                        setPermissionsForm(prev => [...prev, feature.id]);
+                                                    }
+                                                }}
+                                                className={`p-4 rounded-2xl border text-left flex items-center justify-between transition-all ${isSelected
+                                                    ? 'bg-primary-500/10 border-primary-500/30'
+                                                    : 'bg-slate-950/30 border-slate-800'
+                                                    }`}
+                                            >
+                                                <span className={`font-semibold ${isSelected ? 'text-primary-300' : 'text-slate-400'}`}>
+                                                    {feature.name}
+                                                </span>
+                                                <div className={`w-5 h-5 rounded flex items-center justify-center ${isSelected ? 'bg-primary-500 text-white' : 'border border-slate-600'}`}>
+                                                    {isSelected && <CheckCircle2 size={14} />}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="pt-4 border-t border-slate-800 mt-auto flex-shrink-0">
+                                <button
+                                    onClick={handleSavePermissions}
+                                    disabled={isSubmitting}
+                                    className="w-full bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white font-bold py-4 rounded-2xl transition-all shadow-xl shadow-primary-900/20 flex items-center justify-center gap-2"
+                                >
+                                    {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Save Permissions'}
+                                </button>
+                            </div>
                         </motion.div>
                     </div>
                 )}

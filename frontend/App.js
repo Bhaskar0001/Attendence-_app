@@ -27,13 +27,22 @@ function AppContent() {
 
     const [hasToken, setHasToken] = React.useState(false);
     const [authLoading, setAuthLoading] = React.useState(true);
+    const [forceChangeRoute, setForceChangeRoute] = React.useState(false);
 
     React.useEffect(() => {
         const checkAuth = async () => {
             try {
                 const token = await SecureStore.getItemAsync('userToken');
-                const userData = await SecureStore.getItemAsync('userData');
-                setHasToken(!!(token && userData));
+                const userDataStr = await SecureStore.getItemAsync('userData');
+                if (token && userDataStr) {
+                    const userData = JSON.parse(userDataStr);
+                    if (userData.force_password_change) {
+                        setForceChangeRoute(true);
+                    }
+                    setHasToken(true);
+                } else {
+                    setHasToken(false);
+                }
             } catch (e) {
                 setHasToken(false);
             } finally {
@@ -51,7 +60,7 @@ function AppContent() {
         );
     }
 
-    const initialRoute = hasToken ? "Home" : (theme.orgId ? "Login" : "OrganizationSelect");
+    const initialRoute = hasToken ? (forceChangeRoute ? "ForceChangePassword" : "Home") : (theme.orgId ? "Login" : "OrganizationSelect");
 
     return (
         <NavigationContainer>
@@ -66,6 +75,7 @@ function AppContent() {
                 <Stack.Screen name="Login" component={LoginScreen} />
                 <Stack.Screen name="Register" component={RegisterScreen} />
                 <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+                <Stack.Screen name="ForceChangePassword" component={require('./src/screens/ForceChangePasswordScreen').default} />
                 <Stack.Screen name="Home" component={HomeScreen} />
                 <Stack.Screen name="History" component={HistoryScreen} />
                 <Stack.Screen name="AttendanceScan" component={AttendanceScanScreen} />

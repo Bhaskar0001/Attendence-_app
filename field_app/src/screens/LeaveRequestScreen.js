@@ -13,6 +13,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView } from 'expo-camera';
 import client from '../api/client';
+import { getFriendlyErrorMessage } from '../utils/errorUtils';
 
 export default function LeaveRequestScreen({ navigation }) {
     const { user, organization } = useAuth();
@@ -75,9 +76,7 @@ export default function LeaveRequestScreen({ navigation }) {
             setView('list');
             fetchMyRequests();
         } catch (err) {
-            const detail = err.response?.data?.detail;
-            const msg = typeof detail === 'string' ? detail : JSON.stringify(detail) || 'Failed to submit request.';
-            Alert.alert('Error', msg);
+            Alert.alert('Error', getFriendlyErrorMessage(err, 'Failed to submit request.'));
         } finally {
             setLoading(false);
         }
@@ -95,7 +94,7 @@ export default function LeaveRequestScreen({ navigation }) {
             const res = await client.get(`/api/leave/requests/${selectedRequest._id}/discussion`);
             setSelectedRequest({ ...selectedRequest, discussion: res.data });
         } catch (err) {
-            Alert.alert('Error', 'Failed to send message.');
+            Alert.alert('Error', getFriendlyErrorMessage(err, 'Failed to send message.'));
         } finally {
             setSendingMessage(false);
         }

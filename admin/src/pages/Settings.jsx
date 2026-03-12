@@ -32,12 +32,42 @@ const Settings = () => {
         try {
             setLoading(true);
             const res = await api.get('/admin/settings');
-            setSettings(res.data);
+            setSettings({
+                ...res.data,
+                primary_color: res.data.primary_color || '#6366f1'
+            });
         } catch (err) {
             console.error('Error fetching settings:', err);
             setError('Failed to load system configurations.');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleLogoUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (file.size > 5 * 1024 * 1024) {
+            setError('Logo size must be less than 5MB');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            setSaving(true);
+            const res = await api.post('/admin/upload-logo', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            setSettings({ ...settings, logo_url: res.data.logo_url });
+            setSuccess('Logo uploaded successfully. Save changes to persist.');
+        } catch (err) {
+            console.error('Logo upload error:', err);
+            setError('Failed to upload logo.');
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -201,10 +231,29 @@ const Settings = () => {
 
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">Organization Logo</label>
-                            <div className="p-4 rounded-xl border-2 border-dashed border-slate-800 hover:border-slate-700 transition-colors flex flex-col items-center justify-center cursor-pointer bg-slate-950/50">
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Click to Upload Logo</p>
+                            <label className="p-4 rounded-xl border-2 border-dashed border-slate-800 hover:border-slate-700 transition-colors flex flex-col items-center justify-center cursor-pointer bg-slate-950/50 min-h-[100px] relative overflow-hidden">
+                                {settings.logo_url ? (
+                                    <img
+                                        src={settings.logo_url}
+                                        className="h-16 w-auto object-contain mb-2"
+                                        alt="Org Logo"
+                                    />
+                                ) : (
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Click to Upload Logo</p>
+                                )}
                                 <p className="text-[9px] text-slate-600 mt-1">(PNG, SVG or JPG - Max 5MB)</p>
-                            </div>
+                                <input
+                                    type="file"
+                                    className="hidden"
+                                    onChange={handleLogoUpload}
+                                    accept="image/*"
+                                />
+                                {saving && (
+                                    <div className="absolute inset-0 bg-slate-950/60 flex items-center justify-center">
+                                        <Loader2 className="animate-spin text-primary-500" size={24} />
+                                    </div>
+                                )}
+                            </label>
                         </div>
                     </div>
                 </div>
