@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "OfficeFlow",
-    "slug": "officeflow",
+    "name": "LogDay",
+    "slug": "logday",
     "version": "1.0.0",
     "runtimeVersion": {
       "policy": "appVersion"
@@ -23,14 +23,14 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.officeflow.app"
+      "bundleIdentifier": "com.logday.desk"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f172a"
       },
-      "package": "com.officeflow.app",
+      "package": "com.logday.desk",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -47,14 +47,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow OfficeFlow to use your camera for face recognition."
+          "cameraPermission": "Allow LogDay to use your camera for face recognition."
         }
       ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow OfficeFlow to use your location to verify your presence at the office.",
-          "locationAlwaysPermission": "Allow OfficeFlow to use your location to verify your presence at the office."
+          "locationAlwaysAndWhenInUsePermission": "Allow LogDay to use your location to verify your presence at the office.",
+          "locationAlwaysPermission": "Allow LogDay to use your location to verify your presence at the office."
         }
       ],
       "expo-secure-store"

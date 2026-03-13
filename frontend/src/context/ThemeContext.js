@@ -9,7 +9,7 @@ export const defaultTheme = {
     secondaryColor: '#1e293b', // Slate 800
     backgroundColor: '#0f172a', // Slate 900
     logoUrl: null,
-    orgName: 'OfficeFlow',
+    orgName: 'LogDay',
     orgId: null,
     orgSlug: null
 };
